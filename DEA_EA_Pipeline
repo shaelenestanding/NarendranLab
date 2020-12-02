@@ -1,0 +1,367 @@
+# !!! = Project ID
+# ### = GTEX tissue
+# +++ = GTEX tissue (CAPITALIZED)
+# ?????? = Disease type
+# %%% = Sample type
+
+library(TCGAbiolinks)
+library(SummarizedExperiment)
+library(TCGAutils)
+library(limma)
+library(biomaRt)
+library(maftools)
+library(recount)
+library(dplyr)
+library(EnhancedVolcano)
+library(topGO)
+
+#set up calling of all the genes and symbols
+convert.ENSG.Symbol <- function(genes){
+  mart <- useDataset("hsapiens_gene_ensembl", useMart("ensembl", host = "https://dec2016.archive.ensembl.org"))
+  G_list <- getBM(filters = "ensembl_gene_id", attributes = c("ensembl_gene_id", "hgnc_symbol"), values = genes, mart = mart)
+  return(G_list)
+}
+
+#set up total samples count file for downstream use
+samples.Count <- setNames(data.frame(matrix(ncol = 2, nrow = 0)), c("tumor", "normal"))
+
+#download the TARGET data
+query.!!! <- GDCquery(project = "TARGET-!!!",
+                     data.category = "Transcriptome Profiling",
+                     data.type = "Gene Expression Quantification",
+                     workflow.type = "HTSeq - Counts")
+
+samplesDown.!!! <- getResults(query.!!!, cols = c("cases"))
+dataSmTP.!!! <- TCGAquery_SampleTypes(barcode = samplesDown.!!!,
+                                     typesample = "%%%")   
+
+#Query the findings from the TARGET data
+query.target.down <- GDCquery(project = "TARGET-!!!",
+                              data.category = "Transcriptome Profiling",
+                              data.type = "Gene Expression Quantification",
+                              workflow.type = "HTSeq - Counts",
+                              barcode = c(dataSmTP.!!!))
+
+#Fix any duplicate downloaded data
+query.target.down.2=query.target.down
+tmp=query.target.down.2$results[[1]]
+tmp=tmp[which(!duplicated(tmp$cases)),]
+query.target.down.2$results[[1]]=tmp
+
+
+#Download the findings from the above query
+GDCdownload(query.target.down.2)
+
+#Prepare to preprocess, normalize and filter the TARGET data to correct the inputted data
+SummarizedExperiment = TRUE
+data <- GDCprepare(query.target.down.2)
+
+dataPrep_target <- TCGAanalyze_Preprocessing(object = data, 
+                                             cor.cut = 0.6,
+                                             datatype = "HTSeq - Counts")                      
+
+dataNorm_target <- TCGAanalyze_Normalization(tabDF = dataPrep_target,
+                                             geneInfo = geneInfoHT,
+                                             method = "gcContent") 
+
+boxplot(dataPrep_target, outline = FALSE)
+boxplot(dataNorm_target, outline = FALSE)
+
+dataFilt_target <- TCGAanalyze_Filtering(tabDF = dataNorm_target,
+                                         method = "quantile", 
+                                         qnt.cut =  0.25)  
+
+!!!.batchCorr.target <- as.data.frame(dataFilt_target)
+
+#download normal tissue samples from the GTEx database using the recount2 project 
+!!!.recount.gtex <- TCGAquery_recount2(project = "GTEX", tissue = "###")
+
+#scale the GTEx data data 
+!!!.eset.gtex <- assays(scale_counts(!!!.recount.gtex$GTEX_###, round = TRUE))$counts
+
+#quality control
+rse_scaled <- scale_counts(!!!.recount.gtex$GTEX_###, round = TRUE)
+summary(colSums(assays(rse_scaled)$counts)) / 1e6
+
+#renaming data frame for downstream use
+!!!.eset.target <- !!!.batchCorr.target
+
+#removing spaces
+rownames(!!!.eset.gtex) <- gsub("\\..*", "", rownames(!!!.eset.gtex))
+rownames(!!!.eset.target) <- gsub("\\..*", "", rownames(!!!.eset.target))
+
+#create summarized data frame of TARGET and GTEx data
+dataPrep.!!! <- merge(as.data.frame(!!!.eset.gtex), as.data.frame(!!!.eset.target), by = 0, all = TRUE)
+rownames(dataPrep.!!!) <- dataPrep.!!!$Row.names
+dataPrep.!!!$Row.names <- NULL
+
+#BATCH CORRECTION between GTEx and TARGET
+AnnotationCounts <- matrix(0,ncol(dataPrep.!!!),2)
+colnames(AnnotationCounts) <- c("Samples","Batch")
+rownames(AnnotationCounts) <- colnames(dataPrep.!!!)
+
+AnnotationCounts <- as.data.frame(AnnotationCounts)
+AnnotationCounts$Samples <- colnames(dataPrep.!!!)
+
+AnnotationCounts[colnames(!!!.eset.gtex),"Batch"] <- "!!!.eset.gtex"
+AnnotationCounts[colnames(!!!.eset.target),"Batch"] <- "!!!.eset.target"
+
+#get rid of any NA values in the data frame
+dataPrep.!!! <- na.omit(dataPrep.!!!) 
+
+countsCorrected <- TCGAbatch_Correction(tabDF = dataPrep.!!!,
+                                        UnpublishedData = TRUE, 
+                                        AnnotationDF = AnnotationCounts)
+
+#change negative values into zero values for downstream use
+zero.countsCorrected <- countsCorrected
+
+zero.countsCorrected[zero.countsCorrected < 0] <- 0
+
+#normalize and filter the data
+dataNorm.!!! <- TCGAanalyze_Normalization(tabDF = zero.countsCorrected,
+                                         geneInfo = geneInfoHT,
+                                         method = "gcContent")
+
+dataFilt.!!! <- TCGAanalyze_Filtering(tabDF = dataNorm.!!!,
+                                     method = "quantile",
+                                     qnt.cut = 0.25)
+
+#differential gene expression analysis
+DEG.!!! <- TCGAanalyze_DEA(mat1 = dataFilt.!!![,colnames(!!!.eset.gtex)],
+                          mat2 = dataFilt.!!![,colnames(!!!.eset.target)],
+                          metadata = FALSE,
+                          pipeline = "limma",
+                          voom = TRUE,
+                          Cond1type = "Normal",
+                          Cond2type = "Tumor",
+                          method = "glmLRT")
+
+#differential expression analysis for the enrichment analysis genes
+EA.DEG.!!! <- TCGAanalyze_DEA(mat1 = dataFilt.!!![,colnames(!!!.eset.gtex)],
+                             mat2 = dataFilt.!!![,colnames(!!!.eset.target)],
+                             metadata = FALSE,
+                             pipeline = "limma",
+                             voom = TRUE,
+                             fdr.cut = 10e-16,
+                             logFC.cut = 2,   
+                             Cond1type = "Normal",
+                             Cond2type = "Tumor",
+                             method = "glmLRT")
+
+assign("last.warning", NULL, envir = baseenv())                            
+
+#change symbol names
+!!!.conversion.table <- convert.ENSG.Symbol(rownames(DEG.!!!))
+!!!.conversion.inter.DEG <- intersect(!!!.conversion.table[-which(!!!.conversion.table$hgnc_symbol==""),]$ensembl_gene_id, rownames(DEG.!!!))
+!!!.conversion.table2 <- !!!.conversion.table[which(!!!.conversion.table$ensembl_gene_id %in% !!!.conversion.inter.DEG),]
+rownames(!!!.conversion.table2) <- !!!.conversion.table2$ensembl_gene_id
+
+#Error check and correction
+dupl <- names(last.warning)
+if (!is.null(dupl) == TRUE) {
+  dupl.sub <- noquote(sub(".*: ", "", dupl))
+  dupl.sub2 <- scan(text = dupl.sub, sep = ",", what = "")
+  dupl.sub3 <- gsub("[^[:alnum:] ]|\\s", "", dupl.sub2)
+  DEG.!!! <- DEG.!!![-which(rownames(DEG.!!!) %in% c(dupl.sub3)), ]
+  !!!.conversion.table <- convert.ENSG.Symbol(rownames(DEG.!!!))
+  !!!.conversion.inter.DEG <- intersect(!!!.conversion.table[-which(!!!.conversion.table$hgnc_symbol==""),]$ensembl_gene_id, rownames(DEG.!!!))
+  !!!.conversion.table2 <- !!!.conversion.table[which(!!!.conversion.table$ensembl_gene_id %in% !!!.conversion.inter.DEG),]
+  rownames(!!!.conversion.table2) <- !!!.conversion.table2$ensembl_gene_id
+  !!!.conversion.table[-which(!!!.conversion.table$hgnc_symbol==""),] 
+  assign("last.warning", NULL, envir = baseenv())
+} else {
+  !!!.conversion.table[-which(!!!.conversion.table$hgnc_symbol==""),]
+}
+
+#change symbol gene names for enrichment analysis genes
+!!!.EA.conversion.table <- convert.ENSG.Symbol(rownames(EA.DEG.!!!))
+!!!.EA.conversion.inter.DEG <- intersect(!!!.conversion.table[-which(!!!.conversion.table$hgnc_symbol==""),]$ensembl_gene_id, rownames(EA.DEG.!!!))
+
+!!!.EA.conversion.table2 <- !!!.EA.conversion.table[which(!!!.EA.conversion.table$ensembl_gene_id %in% !!!.EA.conversion.inter.DEG),]
+rownames(!!!.EA.conversion.table2) <- !!!.EA.conversion.table2$ensembl_gene_id
+
+#Error check and correction
+dupl <- names(last.warning)
+if (!is.null(dupl) == TRUE) {
+  dupl.sub <- noquote(sub(".*: ", "", dupl))
+  dupl.sub2 <- scan(text = dupl.sub, sep = ",", what = "")
+  dupl.sub3 <- gsub("[^[:alnum:] ]|\\s", "", dupl.sub2)
+  EA.DEG.!!! <- EA.DEG.!!![-which(rownames(EA.DEG.!!!) %in% c(dupl.sub3)), ]
+  !!!.EA.conversion.table <- convert.ENSG.Symbol(rownames(EA.DEG.!!!))
+  !!!.EA.conversion.inter.DEG <- intersect(!!!.EA.conversion.table[-which(!!!.EA.conversion.table$hgnc_symbol==""),]$ensembl_gene_id, rownames(EA.DEG.!!!))
+  !!!.EA.conversion.table2 <- !!!.EA.conversion.table[which(!!!.EA.conversion.table$ensembl_gene_id %in% !!!.EA.conversion.inter.DEG),]
+  rownames(!!!.EA.conversion.table2) <- !!!.EA.conversion.table2$ensembl_gene_id
+  !!!.EA.conversion.table[-which(!!!.EA.conversion.table$hgnc_symbol==""),]
+  assign("last.warning", NULL, envir = baseenv())
+} else {
+  !!!.EA.conversion.table[-which(!!!.EA.conversion.table$hgnc_symbol==""),]                                       
+}
+
+#convert all genes to their gene name
+DEG.!!!.hgnc <- DEG.!!![!!!.conversion.inter.DEG,]
+DEGs.!!!.hgnc <- merge(DEG.!!!.hgnc, !!!.conversion.table2, by = 0)
+rownames(DEGs.!!!.hgnc) <- DEGs.!!!.hgnc$Row.names
+DEGs.!!!.hgnc$Row.names <- NULL
+rownames(DEGs.!!!.hgnc) <- DEGs.!!!.hgnc$hgnc_symbol
+
+#convert all genes to their gene name
+EA.DEG.!!!.hgnc <- EA.DEG.!!![!!!.EA.conversion.inter.DEG,]
+EA.DEGs.!!!.hgnc <- merge(EA.DEG.!!!.hgnc, !!!.EA.conversion.table2, by = 0)
+rownames(EA.DEGs.!!!.hgnc) <- EA.DEGs.!!!.hgnc$Row.names
+EA.DEGs.!!!.hgnc$Row.names <- NULL
+rownames(EA.DEGs.!!!.hgnc) <- EA.DEGs.!!!.hgnc$hgnc_symbol                           
+
+#remove unneccesary columns for downstream analysis
+EA.DEGs.!!!.hgnc <- subset(EA.DEGs.!!!.hgnc, select = -c(AveExpr, t, P.Value, B, ensembl_gene_id))                           
+names(EA.DEGs.!!!.hgnc)[3] <- "Gene.symbol"
+EA.DEGs.!!!.hgnc <- EA.DEGs.!!!.hgnc %>% dplyr::select(Gene.symbol, everything())
+
+#download the PID genes into a data frame
+Panel_PIDGenes <- read.csv(file = "Panel_PIDGenes.csv")
+
+#subset to select genes involved in PID
+PID.DEGs.!!!.hgnc <- subset(DEGs.!!!.hgnc, hgnc_symbol %in% Panel_PIDGenes$ACD)
+PID.EA.DEGs.!!!.hgnc <- subset(EA.DEGs.!!!.hgnc, Gene.symbol %in% Panel_PIDGenes$ACD)
+
+#write the final csv files
+write.csv(PID.DEGs.!!!.hgnc, "PID.DEGs.!!!.csv")
+write.csv(DEGs.!!!.hgnc, "DEGs.!!!.csv")
+write.csv(PID.EA.DEGs.!!!.hgnc, "PID.EA.DEGs.!!!.csv")
+write.csv(EA.DEGs.!!!.hgnc, "EA.DEGs.!!!.csv")                                                     
+
+#visualize DEA results 
+EnhancedVolcano(PID.DEGs.!!!.hgnc,
+                lab = rownames(PID.DEGs.!!!.hgnc),
+                x = 'logFC',
+                y = 'adj.P.Val',
+                ylab = bquote(~-Log[10]~ "(FDR corrected-P values)"),
+                title = "?????? (TARGET-!!!) vs. Normal (GTEX-+++)",
+                subtitle = "Differential expression using limma-voom; showing PID-related genes",
+                caption = "FC cutoff, 2; p-value cutoff, 10e-16",
+                pCutoff = 10e-16,
+                FCcutoff = 2,
+                pointSize = 6.0,
+                labSize = 6.0,
+                legendPosition = 'none')  
+
+dev.copy(tiff, "DEA_TARGET-!!!vsGTEX-+++.tiff", width=1000, height=1000)
+dev.off()     
+
+#topGO enrichment analysis 
+
+#define object for genes to search from
+allGO2genes <- annFUN.org(whichOnto="BP", feasibleGenes=NULL, mapping="org.Hs.eg.db", ID="symbol")
+selection <- function(x) TRUE
+
+#transpose data and make own data frame for each observation
+T.EA.DEGs.!!!.hgnc <- as.data.frame(t(EA.DEGs.!!!.hgnc))
+EA.rankedGenes.geneName.!!! <- data.frame(rbind(T.EA.DEGs.!!!.hgnc[1,]))
+EA.rankedGenes.pValue.!!! <- data.frame(rbind(as.numeric(T.EA.DEGs.!!!.hgnc[3,])))
+
+#set up numeric vector
+numVector.EA.rankedGenes.!!! <- c(as.numeric(EA.rankedGenes.pValue.!!![1,]))
+names(numVector.EA.rankedGenes.!!!) <- c(EA.rankedGenes.geneName.!!![1,])
+
+#topGO analysis
+EA.DEGs.!!!.hgnc.topGO <- new("topGOdata", ontology = "BP", allGenes = numVector.EA.rankedGenes.!!!, annot = annFUN.GO2genes, GO2genes = allGO2genes, geneSel = selection, nodeSize = 10)
+EA.DEGs.!!!.hgnc.KS <- runTest(EA.DEGs.!!!.hgnc.topGO, algorithm = "classic", statistic = "ks")
+EA.DEGs.!!!.hgnc.Enrichment <- GenTable(EA.DEGs.!!!.hgnc.topGO, KS = EA.DEGs.!!!.hgnc.KS, orderBy = KS, topNodes = 10)
+EA.DEGs.!!!.hgnc.Enrichment <- EA.DEGs.!!!.hgnc.Enrichment [EA.DEGs.!!!.hgnc.Enrichment$KS<0.05,]
+EA.DEGs.!!!.hgnc.Enrichment <- EA.DEGs.!!!.hgnc.Enrichment[,c("GO.ID","Term","KS")]
+write.csv(EA.DEGs.!!!.hgnc.Enrichment, "EA.DEGs.!!!.hgnc.Enrichment.csv")
+
+##Set up visual
+EA.DEGs.!!!.hgnc.Enrichment$Term <- gsub(" [a-z]*\\.\\.\\.$", "", EA.DEGs.!!!.hgnc.Enrichment$Term)
+EA.DEGs.!!!.hgnc.Enrichment$Term <- gsub("\\.\\.\\.$", "", EA.DEGs.!!!.hgnc.Enrichment$Term)
+EA.DEGs.!!!.hgnc.Enrichment$Term <- paste(EA.DEGs.!!!.hgnc.Enrichment$GO.ID, EA.DEGs.!!!.hgnc.Enrichment$Term, sep=", ")
+EA.DEGs.!!!.hgnc.Enrichment$Term <- factor(EA.DEGs.!!!.hgnc.Enrichment$Term, levels=rev(EA.DEGs.!!!.hgnc.Enrichment$Term))
+EA.DEGs.!!!.hgnc.Enrichment$KS <- as.numeric(EA.DEGs.!!!.hgnc.Enrichment$KS)
+
+# Plot the results (the enrichment score is just negative log (base 10) of the enrichment P-value)
+require(ggplot2)
+ggplot(EA.DEGs.!!!.hgnc.Enrichment, aes(x=Term, y=-log10(KS))) +
+    stat_summary(geom = "bar", fun.y = mean, position = "dodge") +
+    xlab("Biological process") +
+    ylab("Enrichment") +
+    ggtitle("EA_Analysis ?????? (TARGET_!!!)") +
+    scale_y_continuous(breaks = round(seq(0, max(-log10(EA.DEGs.!!!.hgnc.Enrichment$KS)), by = 2), 1)) +
+    theme_bw(base_size=24) +
+    theme(
+        legend.position='none',
+        legend.background=element_rect(),
+        plot.title=element_text(angle=0, size=24, face="bold", vjust=1),
+        axis.text.x=element_text(angle=0, size=18, face="bold", hjust=1.10),
+        axis.text.y=element_text(angle=0, size=18, face="bold", vjust=0.5),
+        axis.title=element_text(size=24, face="bold"),
+        legend.key=element_blank(),     #removes the border
+        legend.key.size=unit(1, "cm"),      #Sets overall area/size of the legend
+        legend.text=element_text(size=18),  #Text size
+        title=element_text(size=18)) +
+    guides(colour=guide_legend(override.aes=list(size=2.5))) +
+    coord_flip()
+
+dev.copy(tiff, "EA_TARGET-!!!vsGTEX-+++.tiff", width=1000, height=1000)
+dev.off()   
+
+#PID gene topGO analysis 
+
+#transpose data frame and then make own frame for each necessary observation
+T.PID.EA.DEGs.!!!.hgnc <- as.data.frame(t(PID.EA.DEGs.!!!.hgnc))
+PID.EA.rankedGenes.geneName.!!! <- data.frame(rbind(T.PID.EA.DEGs.!!!.hgnc[1,]))
+PID.EA.rankedGenes.pValue.!!! <- data.frame(rbind(as.numeric(T.PID.EA.DEGs.!!!.hgnc[3,])))
+
+#set up PID vector
+numVector.PID.EA.rankedGenes.!!! <- c(as.numeric(PID.EA.rankedGenes.pValue.!!![1,]))
+names(numVector.PID.EA.rankedGenes.!!!) <- c(PID.EA.rankedGenes.geneName.!!![1,])
+
+#topGo analysis for PID genes
+PID.EA.DEGs.!!!.hgnc.topGO <- new("topGOdata", ontology = "BP", allGenes = numVector.PID.EA.rankedGenes.!!!, annot = annFUN.GO2genes, GO2genes = allGO2genes, geneSel = selection, nodeSize = 10)
+PID.EA.DEGs.!!!.hgnc.KS <- runTest(PID.EA.DEGs.!!!.hgnc.topGO, algorithm = "classic", statistic = "ks")
+PID.EA.DEGs.!!!.hgnc.Enrichment <- GenTable(PID.EA.DEGs.!!!.hgnc.topGO, KS = PID.EA.DEGs.!!!.hgnc.KS, orderBy = KS, topNodes = 10)
+PID.EA.DEGs.!!!.hgnc.Enrichment <- PID.EA.DEGs.!!!.hgnc.Enrichment [PID.EA.DEGs.!!!.hgnc.Enrichment$KS<0.05,]
+PID.EA.DEGs.!!!.hgnc.Enrichment <- PID.EA.DEGs.!!!.hgnc.Enrichment[,c("GO.ID","Term","KS")]
+write.csv(PID.EA.DEGs.!!!.hgnc.Enrichment, PID.EA.DEGs.!!!.hgnc.Enrichment.csv)
+
+
+##Set up visual
+PID.EA.DEGs.!!!.hgnc.Enrichment$Term <- gsub(" [a-z]*\\.\\.\\.$", "", PID.EA.DEGs.!!!.hgnc.Enrichment$Term)
+PID.EA.DEGs.!!!.hgnc.Enrichment$Term <- gsub("\\.\\.\\.$", "", PID.EA.DEGs.!!!.hgnc.Enrichment$Term)
+PID.EA.DEGs.!!!.hgnc.Enrichment$Term <- paste(PID.EA.DEGs.!!!.hgnc.Enrichment$GO.ID, PID.EA.DEGs.!!!.hgnc.Enrichment$Term, sep=", ")
+PID.EA.DEGs.!!!.hgnc.Enrichment$Term <- factor(PID.EA.DEGs.!!!.hgnc.Enrichment$Term, levels=rev(PID.EA.DEGs.!!!.hgnc.Enrichment$Term))
+PID.EA.DEGs.!!!.hgnc.Enrichment$KS <- as.numeric(PID.EA.DEGs.!!!.hgnc.Enrichment$KS)
+
+# Plot the results (the enrichment score is just negative log (base 10) of the enrichment P-value)
+require(ggplot2)
+ggplot(PID.EA.DEGs.!!!.hgnc.Enrichment, aes(x=Term, y=-log10(KS))) +
+    stat_summary(geom = "bar", fun.y = mean, position = "dodge") +
+    xlab("Biological process") +
+    ylab("Enrichment") +
+    ggtitle("PID_EA_Analysis ?????? (TARGET_!!!)") +
+    scale_y_continuous(breaks = round(seq(0, max(-log10(PID.EA.DEGs.!!!.hgnc.Enrichment$KS)), by = 2), 1)) +
+    theme_bw(base_size=24) +
+    theme(
+        legend.position='none',
+        legend.background=element_rect(),
+        plot.title=element_text(angle=0, size=24, face="bold", vjust=1),
+        axis.text.x=element_text(angle=0, size=18, face="bold", hjust=1.10),
+        axis.text.y=element_text(angle=0, size=18, face="bold", vjust=0.5),
+        axis.title=element_text(size=24, face="bold"),
+        legend.key=element_blank(),     #removes the border
+        legend.key.size=unit(1, "cm"),      #Sets overall area/size of the legend
+        legend.text=element_text(size=18),  #Text size
+        title=element_text(size=18)) +
+    guides(colour=guide_legend(override.aes=list(size=2.5))) +
+    coord_flip()
+
+dev.copy(tiff, "PID.EA_TARGET-!!!vsGTEX-+++.tiff", width=1000, height=1000)
+dev.off()   
+
+#final sample count updated
+!!!.samples.Count <- data.frame(ncol(!!!.eset.target), ncol(!!!.eset.gtex))
+names(!!!.samples.Count) <- c("tumor", "normal")
+samples.Count <- rbind(samples.Count, "TARGET-!!!" = !!!.samples.Count)
+write.csv(samples.Count, "samples.Count.csv")
+
+#Clear data except for Panel_PIDGenes and function
+rm(list = setdiff(ls(), c("Panel_PIDGenes", "samples.Count", "convert.ENSG.Symbol")))                                                                                                                                                        
