@@ -1,0 +1,9 @@
+proj,sample_type,name
+TARGET-ALL-P2,Primary Blood Derived Cancer - Bone Marrow,TARGET-ALL (TBM)
+TARGET-ALL-P2,Primary Blood Derived Cancer - Peripheral Blood,TARGET-ALL (TB)
+TARGET-AML,Primary Blood Derived Cancer - Bone Marrow,TARGET-AML (TBM)
+TARGET-AML,Primary Blood Derived Cancer - Peripheral Blood,TARGET-AML (TB)
+TARGET-CCSK,Primary Tumor,TARGET-CCSK
+TARGET-NBL,Primary Tumor,TARGET-NBL
+TARGET-RT,Primary Tumor,TARGET-RT
+TARGET-WT,Primary Tumor,TARGET-WT
